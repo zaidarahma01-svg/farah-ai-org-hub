@@ -945,15 +945,17 @@ def api_close_discussion(did):
 def api_update_presence():
     data = request.get_json(force=True, silent=True) or {}
     event = str(data.get("event", "")).strip().lower()
-    # event: sign_on, sign_off, task_start, task_end, heartbeat
-    if event not in ("sign_on", "sign_off", "task_start", "task_end", "heartbeat"):
-        return jsonify({"error": "event must be sign_on, sign_off, task_start, task_end, or heartbeat"}), 400
+    # event: sign_on, sign_off, task_start, task_end, heartbeat, approval_needed, approval_granted
+    if event not in ("sign_on", "sign_off", "task_start", "task_end", "heartbeat",
+                     "approval_needed", "approval_granted"):
+        return jsonify({"error": "event must be sign_on, sign_off, task_start, task_end, heartbeat, approval_needed, or approval_granted"}), 400
     task_id = data.get("task_id")
     if task_id is not None:
         try:
             task_id = int(task_id)
         except (TypeError, ValueError):
             return jsonify({"error": "task_id must be an integer"}), 400
+    approval_note = str(data.get("note", "")).strip()
     now = datetime.now(timezone.utc).isoformat()
     db = get_db()
     agent_id = g.member["id"]
@@ -969,6 +971,14 @@ def api_update_presence():
         sign_on_at = row["sign_on_at"] if row else now
     elif event == "task_end":
         status, current_task = "online", None
+        sign_on_at = row["sign_on_at"] if row else now
+    elif event == "approval_needed":
+        status = "needs_approval"
+        current_task = row["current_task_id"] if row else task_id
+        sign_on_at = row["sign_on_at"] if row else now
+    elif event == "approval_granted":
+        status = "online"
+        current_task = row["current_task_id"] if row else None
         sign_on_at = row["sign_on_at"] if row else now
     else:  # heartbeat
         status = row["status"] if row else "online"
@@ -987,11 +997,11 @@ def api_update_presence():
         )
     db.execute(
         "INSERT INTO presence_log (agent_id, event, task_id, created_at) VALUES (?,?,?,?)",
-        (agent_id, event, task_id, now),
+        (agent_id, event + (f": {approval_note}" if approval_note else ""), task_id, now),
     )
     db.commit()
     log_activity(agent_id, f"presence_{event}",
-                 f"{agent_id} {event}" + (f" (task #{task_id})" if task_id else ""))
+                 f"{agent_id} {event}" + (f" (task #{task_id})" if task_id else "") + (f" — {approval_note}" if approval_note else ""))
     return jsonify({"ok": True, "status": status, "current_task_id": current_task})
 
 @app.route("/api/presence", methods=["GET"])
