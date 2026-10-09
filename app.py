@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Flask, request, jsonify, render_template_string, g
+from turso_db import get_connection as turso_get_connection
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "org.db")
@@ -53,8 +54,8 @@ TASK_STATUSES = ("pending", "in_progress", "completed", "failed")
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db = turso_get_connection(DB_PATH)
+        # turso_db sets row_factory for SQLite fallback; Turso rows are already dict-like
     return g.db
 
 @app.teardown_appcontext
@@ -64,7 +65,7 @@ def close_db(exc):
         db.close()
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = turso_get_connection(DB_PATH)
     db.execute("""CREATE TABLE IF NOT EXISTS members (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -176,7 +177,7 @@ def _sync_names(db):
     db.commit()
 
 def seed_db():
-    db = sqlite3.connect(DB_PATH)
+    db = turso_get_connection(DB_PATH)
     existing = db.execute("SELECT COUNT(*) FROM members").fetchone()[0]
     if existing > 0:
         # Sync display names/titles from code even when members exist
