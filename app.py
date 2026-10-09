@@ -151,6 +151,17 @@ def init_db():
         responded_at TEXT,
         FOREIGN KEY (author_id) REFERENCES members(id)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author_id TEXT NOT NULL,
+        whats_working TEXT NOT NULL DEFAULT '',
+        whats_blocked TEXT NOT NULL DEFAULT '',
+        requests TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        reviewed INTEGER NOT NULL DEFAULT 0,
+        reviewed_at TEXT,
+        FOREIGN KEY (author_id) REFERENCES members(id)
+    )""")
     db.commit()
     db.close()
 
@@ -617,6 +628,128 @@ def api_respond_recommendation(rec_id):
     log_activity(g.member["id"], "recommendation_responded",
                  f"Recommendation #{rec_id} -> {new_status}")
     return jsonify({"ok": True, "status": new_status})
+
+# ---------------------------------------------------------------------------
+# Daily feedback form
+# ---------------------------------------------------------------------------
+
+FEEDBACK_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daily Feedback — Farah Gold AI Org Hub</title>
+<style>
+  :root { --gold:#c9a227; --bg:#0d0b08; --card:#171310; --text:#e8dfd0; --muted:#9a8f7a; }
+  body { background:var(--bg); color:var(--text); font-family:Georgia,serif;
+         max-width:640px; margin:0 auto; padding:32px 24px; line-height:1.7; }
+  h1 { color:var(--gold); letter-spacing:1px; font-size:24px; }
+  p.muted { color:var(--muted); font-size:14px; }
+  label { display:block; color:var(--gold); margin:20px 0 6px; font-size:15px;
+          text-transform:uppercase; letter-spacing:1px; }
+  textarea { width:100%; min-height:90px; background:var(--card); color:var(--text);
+             border:1px solid #2a2318; border-radius:6px; padding:12px;
+             font-family:Georgia,serif; font-size:15px; box-sizing:border-box; }
+  button { background:var(--gold); color:#0d0b08; border:none; border-radius:6px;
+           padding:14px 32px; font-size:16px; font-weight:bold; cursor:pointer;
+           margin-top:24px; font-family:Georgia,serif; }
+  button:hover { opacity:0.9; }
+  #result { margin-top:20px; padding:16px; border-radius:6px; display:none; }
+  #result.ok { background:#1a2e1a; border:1px solid #2a5a2a; display:block; }
+  #result.err { background:#2e1a1a; border:1px solid #5a2a2a; display:block; }
+</style></head><body>
+<h1>Daily Feedback</h1>
+<p class="muted">Fill this out once a day. Layla reviews every submission daily.</p>
+<form id="fb">
+  <label for="working">What's working well?</label>
+  <textarea id="working" name="whats_working" placeholder="What's going smoothly..."></textarea>
+  <label for="blocked">What's blocked or frustrating?</label>
+  <textarea id="blocked" name="whats_blocked" placeholder="What's stuck, unclear, or slowing you down..."></textarea>
+  <label for="requests">Requests for Layla / Zaid</label>
+  <textarea id="requests" name="requests" placeholder="What do you need? Decisions, help, resources..."></textarea>
+  <button type="submit">Submit Feedback</button>
+</form>
+<div id="result"></div>
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+document.getElementById('fb').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = document.getElementById('result');
+  try {
+    const resp = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        whats_working: document.getElementById('working').value,
+        whats_blocked: document.getElementById('blocked').value,
+        requests: document.getElementById('requests').value,
+      }),
+    });
+    const d = await resp.json();
+    if (d.ok) { r.className = 'ok'; r.textContent = 'Feedback submitted. Thank you.'; e.target.reset(); }
+    else { r.className = 'err'; r.textContent = 'Error: ' + (d.error || 'unknown'); }
+  } catch (err) { r.className = 'err'; r.textContent = 'Error: ' + err.message; }
+});
+</script>
+</body></html>"""
+
+@app.route("/feedback")
+def feedback_form():
+    return render_template_string(FEEDBACK_HTML)
+
+@app.route("/api/feedback", methods=["POST"])
+@require_auth
+def api_submit_feedback():
+    data = request.get_json(force=True, silent=True) or {}
+    whats_working = str(data.get("whats_working", "")).strip()
+    whats_blocked = str(data.get("whats_blocked", "")).strip()
+    requests_text = str(data.get("requests", "")).strip()
+    if not (whats_working or whats_blocked or requests_text):
+        return jsonify({"error": "at least one field required"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO feedback (author_id, whats_working, whats_blocked, requests, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (g.member["id"], whats_working, whats_blocked, requests_text, now),
+    )
+    fid = cur.lastrowid
+    db.commit()
+    log_activity(g.member["id"], "feedback_submitted", f"Daily feedback #{fid}")
+    return jsonify({"ok": True, "id": fid})
+
+@app.route("/api/feedback", methods=["GET"])
+@require_auth
+def api_list_feedback():
+    # Only coordinator and chairman can review all feedback
+    if g.member["role"] not in ("coordinator",) and not g.member["is_chairman"]:
+        # Agents see only their own
+        db = get_db()
+        rows = db.execute(
+            "SELECT * FROM feedback WHERE author_id=? ORDER BY id DESC",
+            (g.member["id"],),
+        ).fetchall()
+    else:
+        only_unreviewed = request.args.get("unreviewed") == "1"
+        db = get_db()
+        if only_unreviewed:
+            rows = db.execute(
+                "SELECT * FROM feedback WHERE reviewed=0 ORDER BY id DESC"
+            ).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM feedback ORDER BY id DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/feedback/<int:fid>/review", methods=["POST"])
+@require_auth
+def api_review_feedback(fid):
+    if g.member["role"] not in ("coordinator",) and not g.member["is_chairman"]:
+        return jsonify({"error": "only coordinator or chairman can mark reviewed"}), 403
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    db.execute(
+        "UPDATE feedback SET reviewed=1, reviewed_at=? WHERE id=?", (now, fid)
+    )
+    db.commit()
+    return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
 # Operating charter
