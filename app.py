@@ -27,7 +27,7 @@ import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, request, jsonify, render_template_string, g
+from flask import Flask, request, jsonify, render_template_string, g, session, redirect
 from turso_db import get_connection as turso_get_connection
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +35,7 @@ DB_PATH = os.path.join(BASE_DIR, "org.db")
 TOKENS_PATH = os.path.join(BASE_DIR, "TOKENS.md")
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
 
 @app.after_request
 def _security_headers(resp):
@@ -304,6 +305,9 @@ def require_auth(f):
         # Fallback: token as query param or form field (for agents that can't set headers)
         if not token:
             token = request.args.get("token") or (request.form.get("token") if request.form else None)
+        # Fallback: session cookie (set via /connect page)
+        if not token:
+            token = session.get("hub_token")
         member = get_member_by_token(token)
         if not member:
             return jsonify({"error": "unauthorized"}), 401
@@ -1060,11 +1064,14 @@ async function connect() {
   const err = document.getElementById('err');
   if (!key) { err.textContent = 'Please paste your API key.'; err.style.display = 'block'; return; }
   try {
-    const r = await fetch('/api/me?token=' + encodeURIComponent(key));
+    const r = await fetch('/api/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: key }),
+    });
     const d = await r.json();
-    if (d.id) {
-      localStorage.setItem('hub_token', key);
-      location.href = '/?token=' + encodeURIComponent(key);
+    if (d.ok) {
+      location.href = '/';
     } else {
       err.textContent = 'Invalid key. Check with Zaid.'; err.style.display = 'block';
     }
@@ -1076,6 +1083,23 @@ async function connect() {
 @app.route("/connect")
 def connect_page():
     return render_template_string(CONNECT_HTML)
+
+@app.route("/api/connect", methods=["POST"])
+def api_connect():
+    """Secure login: POST API key, get session cookie. Key never appears in URL."""
+    data = request.get_json(force=True, silent=True) or {}
+    token = str(data.get("token", "")).strip()
+    member = get_member_by_token(token)
+    if not member:
+        return jsonify({"error": "invalid key"}), 401
+    session["hub_token"] = token
+    session.permanent = True
+    return jsonify({"ok": True, "id": member["id"], "name": member["name"]})
+
+@app.route("/api/disconnect", methods=["POST"])
+def api_disconnect():
+    session.pop("hub_token", None)
+    return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
 # Team chat — quick "what's going on" messages
