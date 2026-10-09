@@ -162,6 +162,27 @@ def init_db():
         reviewed_at TEXT,
         FOREIGN KEY (author_id) REFERENCES members(id)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS discussions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open',
+        decision TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        FOREIGN KEY (created_by) REFERENCES members(id)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS discussion_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discussion_id INTEGER NOT NULL,
+        author_id TEXT NOT NULL,
+        subagent_slot INTEGER,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (discussion_id) REFERENCES discussions(id),
+        FOREIGN KEY (author_id) REFERENCES members(id)
+    )""")
     db.commit()
     db.close()
 
@@ -750,6 +771,147 @@ def api_review_feedback(fid):
     )
     db.commit()
     return jsonify({"ok": True})
+
+# ---------------------------------------------------------------------------
+# Discussion boards — collaborative deliberation with subagent voices
+# Muse agents only (Layla, Nidhal, Rumi). Each agent participates through up
+# to 3 subagent slots, then the group converges on a course of action.
+# ---------------------------------------------------------------------------
+
+MUSE_AGENTS = ("layla", "nidhal", "rumi")
+
+def _require_muse_agent():
+    if g.member["id"] not in MUSE_AGENTS and not g.member["is_chairman"]:
+        return jsonify({"error": "discussions are Muse agents only"}), 403
+    return None
+
+@app.route("/api/discussions", methods=["POST"])
+@require_auth
+def api_create_discussion():
+    denied = _require_muse_agent()
+    if denied:
+        return denied
+    data = request.get_json(force=True, silent=True) or {}
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO discussions (title, description, status, created_by, created_at)"
+        " VALUES (?,?,?, ?,?)",
+        (title, description, "open", g.member["id"], now),
+    )
+    did = cur.lastrowid
+    db.commit()
+    log_activity(g.member["id"], "discussion_opened", f"Discussion #{did}: {title}")
+    return jsonify({"ok": True, "id": did, "status": "open"})
+
+@app.route("/api/discussions", methods=["GET"])
+@require_auth
+def api_list_discussions():
+    denied = _require_muse_agent()
+    if denied:
+        return denied
+    status = request.args.get("status")
+    db = get_db()
+    if status:
+        rows = db.execute(
+            "SELECT * FROM discussions WHERE status=? ORDER BY id DESC", (status,)
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM discussions ORDER BY id DESC").fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        cnt = db.execute(
+            "SELECT COUNT(*) AS c FROM discussion_messages WHERE discussion_id=?",
+            (r["id"],),
+        ).fetchone()
+        d["message_count"] = cnt["c"]
+        result.append(d)
+    return jsonify(result)
+
+@app.route("/api/discussions/<int:did>", methods=["GET"])
+@require_auth
+def api_get_discussion(did):
+    denied = _require_muse_agent()
+    if denied:
+        return denied
+    db = get_db()
+    disc = db.execute("SELECT * FROM discussions WHERE id=?", (did,)).fetchone()
+    if not disc:
+        return jsonify({"error": "not found"}), 404
+    d = dict(disc)
+    msgs = db.execute(
+        "SELECT * FROM discussion_messages WHERE discussion_id=? ORDER BY id ASC",
+        (did,),
+    ).fetchall()
+    d["messages"] = [dict(m) for m in msgs]
+    return jsonify(d)
+
+@app.route("/api/discussions/<int:did>/messages", methods=["POST"])
+@require_auth
+def api_post_discussion_message(did):
+    denied = _require_muse_agent()
+    if denied:
+        return denied
+    db = get_db()
+    disc = db.execute("SELECT * FROM discussions WHERE id=?", (did,)).fetchone()
+    if not disc:
+        return jsonify({"error": "not found"}), 404
+    if disc["status"] != "open":
+        return jsonify({"error": "discussion is closed"}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    body = str(data.get("body", "")).strip()
+    if not body:
+        return jsonify({"error": "body required"}), 400
+    # subagent_slot: 1, 2, 3 for subagent voices; null/omitted for the agent's own voice
+    slot = data.get("subagent_slot")
+    if slot is not None:
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return jsonify({"error": "subagent_slot must be 1, 2, or 3"}), 400
+        if slot not in (1, 2, 3):
+            return jsonify({"error": "subagent_slot must be 1, 2, or 3"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    cur = db.execute(
+        "INSERT INTO discussion_messages (discussion_id, author_id, subagent_slot, body, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (did, g.member["id"], slot, body, now),
+    )
+    mid = cur.lastrowid
+    db.commit()
+    voice = f" (subagent {slot})" if slot else ""
+    log_activity(g.member["id"], "discussion_message",
+                 f"Discussion #{did}{voice}: message #{mid}")
+    return jsonify({"ok": True, "id": mid})
+
+@app.route("/api/discussions/<int:did>/decide", methods=["POST"])
+@require_auth
+def api_close_discussion(did):
+    # Only coordinator or chairman can record the final decision
+    if g.member["role"] not in ("coordinator",) and not g.member["is_chairman"]:
+        return jsonify({"error": "only coordinator or chairman can close"}), 403
+    db = get_db()
+    disc = db.execute("SELECT * FROM discussions WHERE id=?", (did,)).fetchone()
+    if not disc:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(force=True, silent=True) or {}
+    decision = str(data.get("decision", "")).strip()
+    if not decision:
+        return jsonify({"error": "decision required"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE discussions SET status='decided', decision=?, decided_at=? WHERE id=?",
+        (decision, now, did),
+    )
+    db.commit()
+    log_activity(g.member["id"], "discussion_decided",
+                 f"Discussion #{did} decided: {decision[:80]}")
+    return jsonify({"ok": True, "status": "decided"})
 
 # ---------------------------------------------------------------------------
 # Operating charter
