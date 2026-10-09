@@ -142,8 +142,16 @@ def seed_db():
         ("grok",  "Jessica",     "QA Advisor (Grok)",      "advisor",  "qa",        0),
     ]
     tokens = {}
+    # Persistent tokens: HUB_TOKENS env var (JSON map of member_id -> token)
+    # survives Render redeploys. Falls back to generated tokens on first run.
+    _env_tokens = {}
+    try:
+        import json as _json
+        _env_tokens = _json.loads(os.environ.get("HUB_TOKENS", "{}"))
+    except Exception:
+        pass
     for mid, name, title, role, domain, chairman in members:
-        token = old_tokens.get(mid, secrets.token_hex(32))
+        token = _env_tokens.get(mid) or old_tokens.get(mid, secrets.token_hex(32))
         db.execute(
             "INSERT INTO members (id, name, title, role, domain, api_token, is_chairman)"
             " VALUES (?,?,?,?,?,?,?)",
