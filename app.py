@@ -199,6 +199,13 @@ def init_db():
         created_at TEXT NOT NULL,
         FOREIGN KEY (agent_id) REFERENCES members(id)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        author_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (author_id) REFERENCES members(id)
+    )""")
     db.commit()
     db.close()
 
@@ -1008,6 +1015,50 @@ def api_presence_log():
     return jsonify([dict(r) for r in rows])
 
 # ---------------------------------------------------------------------------
+# Team chat — quick "what's going on" messages
+# ---------------------------------------------------------------------------
+
+@app.route("/api/chat", methods=["POST"])
+@require_auth
+def api_post_chat():
+    data = request.get_json(force=True, silent=True) or {}
+    body = str(data.get("body", "")).strip()
+    if not body:
+        return jsonify({"error": "body required"}), 400
+    if len(body) > 2000:
+        return jsonify({"error": "message too long (max 2000 chars)"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO chat_messages (author_id, body, created_at) VALUES (?,?,?)",
+        (g.member["id"], body, now),
+    )
+    mid = cur.lastrowid
+    db.commit()
+    return jsonify({"ok": True, "id": mid})
+
+@app.route("/api/chat", methods=["GET"])
+@require_auth
+def api_get_chat():
+    limit = min(int(request.args.get("limit", 50)), 200)
+    since_id = request.args.get("since_id")
+    db = get_db()
+    if since_id:
+        rows = db.execute(
+            "SELECT c.*, m.name FROM chat_messages c LEFT JOIN members m ON c.author_id=m.id"
+            " WHERE c.id > ? ORDER BY c.id ASC LIMIT ?",
+            (int(since_id), limit),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT c.*, m.name FROM chat_messages c LEFT JOIN members m ON c.author_id=m.id"
+            " ORDER BY c.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        rows = rows[::-1]  # chronological
+    return jsonify([dict(r) for r in rows])
+
+# ---------------------------------------------------------------------------
 # Operating charter
 # ---------------------------------------------------------------------------
 
@@ -1215,6 +1266,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="empty">No activity yet.</div>
     {% endif %}
   </div>
+
+  <div class="card">
+    <h2>Team Chat</h2>
+    <div id="chatbox" style="max-height:300px;overflow-y:auto;margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <input id="chatinput" type="text" placeholder="What's going on..."
+             style="flex:1;background:var(--card);color:var(--text);border:1px solid #2a2318;border-radius:6px;padding:10px;font-family:Georgia,serif;">
+      <button onclick="sendChat()" style="background:var(--gold);color:#0d0b08;border:none;border-radius:6px;padding:10px 20px;font-weight:bold;cursor:pointer;">Send</button>
+    </div>
+  </div>
+  <script>
+    const chatToken = new URLSearchParams(location.search).get('token') || '';
+    let lastChatId = 0;
+    async function loadChat() {
+      try {
+        const r = await fetch('/api/chat?limit=30', { headers: { 'Authorization': 'Bearer ' + chatToken } });
+        const msgs = await r.json();
+        const box = document.getElementById('chatbox');
+        box.innerHTML = '';
+        msgs.forEach(m => {
+          lastChatId = Math.max(lastChatId, m.id);
+          const d = document.createElement('div');
+          d.className = 'act';
+          d.innerHTML = '<strong>' + m.author_id + '</strong><br><span>' + m.body.replace(/</g,'&lt;') + '</span><div class="meta">' + m.created_at.slice(0,16).replace('T',' ') + ' UTC</div>';
+          box.appendChild(d);
+        });
+        box.scrollTop = box.scrollHeight;
+      } catch(e) {}
+    }
+    async function sendChat() {
+      const inp = document.getElementById('chatinput');
+      const body = inp.value.trim();
+      if (!body) return;
+      await fetch('/api/chat', { method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + chatToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }) });
+      inp.value = '';
+      loadChat();
+    }
+    document.getElementById('chatinput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+    loadChat();
+    setInterval(loadChat, 15000);
+  </script>
 
   <footer>
     Farah Gold AI Organization Hub · <a href="/charter">Charter</a> ·
