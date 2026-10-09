@@ -88,6 +88,8 @@ def init_db():
         block_info TEXT,
         authorized_by TEXT,
         authorized_at TEXT,
+        progress_pct INTEGER NOT NULL DEFAULT 0,
+        progress_msg TEXT NOT NULL DEFAULT '',
         FOREIGN KEY (accountable) REFERENCES members(id),
         FOREIGN KEY (assigned_reviewer) REFERENCES members(id),
         FOREIGN KEY (created_by) REFERENCES members(id)
@@ -112,6 +114,12 @@ def init_db():
     # Drop legacy governance tables from the voting era
     db.execute("DROP TABLE IF EXISTS proposals")
     db.execute("DROP TABLE IF EXISTS votes")
+    # Migrate: add progress columns to tasks if missing
+    cols = [r[1] for r in db.execute("PRAGMA table_info(tasks)").fetchall()]
+    if "progress_pct" not in cols:
+        db.execute("ALTER TABLE tasks ADD COLUMN progress_pct INTEGER NOT NULL DEFAULT 0")
+    if "progress_msg" not in cols:
+        db.execute("ALTER TABLE tasks ADD COLUMN progress_msg TEXT NOT NULL DEFAULT ''")
     db.commit()
     db.close()
 
@@ -342,6 +350,26 @@ def _completion_gate(db, task, member):
         if not task["authorized_by"]:
             return False, "high-risk tasks require chairman authorization (POST /api/tasks/{id}/authorize)"
     return True, ""
+
+@app.route("/api/tasks/<int:task_id>/progress", methods=["POST"])
+@require_auth
+def api_task_progress(task_id):
+    data = request.get_json(force=True, silent=True) or {}
+    db = get_db()
+    task = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        return jsonify({"error": "task not found"}), 404
+    if task["accountable"] != g.member["id"] and g.member["id"] not in ("layla", "zaid"):
+        return jsonify({"error": "you are not accountable for this task"}), 403
+    pct = max(0, min(100, int(data.get("percent", 0))))
+    msg = str(data.get("message", ""))[:280]
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE tasks SET progress_pct=?, progress_msg=?, updated_at=? WHERE id=?",
+        (pct, msg, now, task_id),
+    )
+    db.commit()
+    return jsonify({"ok": True, "percent": pct})
 
 @app.route("/api/tasks/<int:task_id>/complete", methods=["POST"])
 @require_auth
