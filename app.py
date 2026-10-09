@@ -35,6 +35,14 @@ TOKENS_PATH = os.path.join(BASE_DIR, "TOKENS.md")
 
 app = Flask(__name__)
 
+@app.after_request
+def _security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return resp
+
 RISK_TIERS = ("low", "medium", "high")
 VERDICTS = ("approve", "revise", "blocked")
 TASK_STATUSES = ("pending", "in_progress", "completed", "failed")
@@ -286,6 +294,9 @@ def api_get_task(task_id):
 @app.route("/api/tasks", methods=["POST"])
 @require_auth
 def api_create_task():
+    # Only coordinator and chairman can create tasks (per charter)
+    if g.member["role"] not in ("coordinator",) and not g.member["is_chairman"]:
+        return jsonify({"error": "only coordinator or chairman can create tasks"}), 403
     data = request.get_json(force=True)
     title = data.get("title", "").strip()
     if not title:
@@ -505,7 +516,11 @@ def api_override_block(task_id):
 @app.route("/api/activity", methods=["GET"])
 @require_auth
 def api_activity():
-    limit = min(int(request.args.get("limit", 50)), 200)
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (ValueError, TypeError):
+        return jsonify({"error": "limit must be an integer"}), 400
+    limit = max(1, min(limit, 200))
     db = get_db()
     rows = db.execute("SELECT * FROM activity ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -516,20 +531,6 @@ def api_me():
     m = dict(g.member)
     m.pop("api_token", None)
     return jsonify(m)
-
-# ---------------------------------------------------------------------------
-# One-time token recovery (REMOVE AFTER USE)
-# ---------------------------------------------------------------------------
-
-SETUP_KEY = "ZP_Ssd1sCHCXlDo-dZAWTA"
-
-@app.route("/setup/tokens/<key>", methods=["GET"])
-def setup_tokens(key):
-    if key != SETUP_KEY:
-        return jsonify({"error": "not found"}), 404
-    db = get_db()
-    rows = db.execute("SELECT id, name, api_token FROM members").fetchall()
-    return jsonify({r["id"]: {"name": r["name"], "token": r["api_token"]} for r in rows})
 
 # ---------------------------------------------------------------------------
 # Operating charter
