@@ -301,6 +301,9 @@ def require_auth(f):
     def decorated(*args, **kwargs):
         auth = request.headers.get("Authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else None
+        # Fallback: token as query param or form field (for agents that can't set headers)
+        if not token:
+            token = request.args.get("token") or (request.form.get("token") if request.form else None)
         member = get_member_by_token(token)
         if not member:
             return jsonify({"error": "unauthorized"}), 401
@@ -1023,6 +1026,56 @@ def api_presence_log():
         "SELECT * FROM presence_log ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+# ---------------------------------------------------------------------------
+# Connect page — enter API key to get started
+# ---------------------------------------------------------------------------
+
+CONNECT_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect — Farah Gold AI Org Hub</title>
+<style>
+  :root { --gold:#c9a227; --bg:#0d0b08; --card:#171310; --text:#e8dfd0; --muted:#9a8f7a; }
+  body { background:var(--bg); color:var(--text); font-family:Georgia,serif;
+         max-width:520px; margin:0 auto; padding:48px 24px; line-height:1.7; text-align:center; }
+  h1 { color:var(--gold); letter-spacing:1px; }
+  p.muted { color:var(--muted); font-size:14px; }
+  input { width:100%; background:var(--card); color:var(--text); border:1px solid #2a2318;
+          border-radius:6px; padding:14px; font-size:15px; box-sizing:border-box;
+          font-family:monospace; margin:16px 0; }
+  button { background:var(--gold); color:#0d0b08; border:none; border-radius:6px;
+           padding:14px 32px; font-size:16px; font-weight:bold; cursor:pointer;
+           font-family:Georgia,serif; }
+  #err { color:#e08080; margin-top:12px; display:none; }
+</style></head><body>
+<h1>Connect to the Hub</h1>
+<p class="muted">Paste your API key below. It stays in your browser — never sent anywhere except the hub.</p>
+<input id="key" type="password" placeholder="Paste API key here..." autocomplete="off">
+<br><button onclick="connect()">Connect</button>
+<div id="err"></div>
+<script>
+async function connect() {
+  const key = document.getElementById('key').value.trim();
+  const err = document.getElementById('err');
+  if (!key) { err.textContent = 'Please paste your API key.'; err.style.display = 'block'; return; }
+  try {
+    const r = await fetch('/api/me?token=' + encodeURIComponent(key));
+    const d = await r.json();
+    if (d.id) {
+      localStorage.setItem('hub_token', key);
+      location.href = '/?token=' + encodeURIComponent(key);
+    } else {
+      err.textContent = 'Invalid key. Check with Zaid.'; err.style.display = 'block';
+    }
+  } catch(e) { err.textContent = 'Connection failed: ' + e.message; err.style.display = 'block'; }
+}
+</script>
+</body></html>"""
+
+@app.route("/connect")
+def connect_page():
+    return render_template_string(CONNECT_HTML)
 
 # ---------------------------------------------------------------------------
 # Team chat — quick "what's going on" messages
