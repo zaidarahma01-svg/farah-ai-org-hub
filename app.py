@@ -183,6 +183,22 @@ def init_db():
         FOREIGN KEY (discussion_id) REFERENCES discussions(id),
         FOREIGN KEY (author_id) REFERENCES members(id)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS presence (
+        agent_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'offline',
+        current_task_id INTEGER,
+        last_ping TEXT NOT NULL,
+        sign_on_at TEXT,
+        FOREIGN KEY (agent_id) REFERENCES members(id)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS presence_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        task_id INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES members(id)
+    )""")
     db.commit()
     db.close()
 
@@ -912,6 +928,84 @@ def api_close_discussion(did):
     log_activity(g.member["id"], "discussion_decided",
                  f"Discussion #{did} decided: {decision[:80]}")
     return jsonify({"ok": True, "status": "decided"})
+
+# ---------------------------------------------------------------------------
+# Presence — agents ping on sign on/off and task start/finish
+# ---------------------------------------------------------------------------
+
+@app.route("/api/presence", methods=["POST"])
+@require_auth
+def api_update_presence():
+    data = request.get_json(force=True, silent=True) or {}
+    event = str(data.get("event", "")).strip().lower()
+    # event: sign_on, sign_off, task_start, task_end, heartbeat
+    if event not in ("sign_on", "sign_off", "task_start", "task_end", "heartbeat"):
+        return jsonify({"error": "event must be sign_on, sign_off, task_start, task_end, or heartbeat"}), 400
+    task_id = data.get("task_id")
+    if task_id is not None:
+        try:
+            task_id = int(task_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "task_id must be an integer"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    agent_id = g.member["id"]
+    row = db.execute("SELECT * FROM presence WHERE agent_id=?", (agent_id,)).fetchone()
+    if event == "sign_on":
+        status, current_task = "online", None
+        sign_on_at = now
+    elif event == "sign_off":
+        status, current_task = "offline", None
+        sign_on_at = row["sign_on_at"] if row else None
+    elif event == "task_start":
+        status, current_task = "on_task", task_id
+        sign_on_at = row["sign_on_at"] if row else now
+    elif event == "task_end":
+        status, current_task = "online", None
+        sign_on_at = row["sign_on_at"] if row else now
+    else:  # heartbeat
+        status = row["status"] if row else "online"
+        current_task = row["current_task_id"] if row else None
+        sign_on_at = row["sign_on_at"] if row else now
+    if row:
+        db.execute(
+            "UPDATE presence SET status=?, current_task_id=?, last_ping=?, sign_on_at=? WHERE agent_id=?",
+            (status, current_task, now, sign_on_at, agent_id),
+        )
+    else:
+        db.execute(
+            "INSERT INTO presence (agent_id, status, current_task_id, last_ping, sign_on_at)"
+            " VALUES (?,?,?,?,?)",
+            (agent_id, status, current_task, now, sign_on_at),
+        )
+    db.execute(
+        "INSERT INTO presence_log (agent_id, event, task_id, created_at) VALUES (?,?,?,?)",
+        (agent_id, event, task_id, now),
+    )
+    db.commit()
+    log_activity(agent_id, f"presence_{event}",
+                 f"{agent_id} {event}" + (f" (task #{task_id})" if task_id else ""))
+    return jsonify({"ok": True, "status": status, "current_task_id": current_task})
+
+@app.route("/api/presence", methods=["GET"])
+@require_auth
+def api_get_presence():
+    db = get_db()
+    rows = db.execute(
+        "SELECT p.*, m.name FROM presence p LEFT JOIN members m ON p.agent_id=m.id"
+        " ORDER BY p.last_ping DESC"
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/presence/log", methods=["GET"])
+@require_auth
+def api_presence_log():
+    limit = min(int(request.args.get("limit", 50)), 200)
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM presence_log ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
 
 # ---------------------------------------------------------------------------
 # Operating charter
