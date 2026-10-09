@@ -124,10 +124,25 @@ def read_existing_tokens():
                 tokens[m.group(1)] = m.group(2)
     return tokens
 
+def _sync_names(db):
+    """Update member display names/titles from code without touching tokens."""
+    updates = [
+        ("victoria", "Rumi", "Executor (Muse)"),
+        ("grok", "Jessica", "QA Advisor (Grok)"),
+    ]
+    for mid, name, title in updates:
+        db.execute(
+            "UPDATE members SET name=?, title=? WHERE id=?",
+            (name, title, mid),
+        )
+    db.commit()
+
 def seed_db():
     db = sqlite3.connect(DB_PATH)
     existing = db.execute("SELECT COUNT(*) FROM members").fetchone()[0]
     if existing > 0:
+        # Sync display names/titles from code even when members exist
+        _sync_names(db)
         db.close()
         return {}
     old_tokens = read_existing_tokens()
