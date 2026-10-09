@@ -467,6 +467,20 @@ def api_me():
     return jsonify(m)
 
 # ---------------------------------------------------------------------------
+# One-time token recovery (REMOVE AFTER USE)
+# ---------------------------------------------------------------------------
+
+SETUP_KEY = "ZP_Ssd1sCHCXlDo-dZAWTA"
+
+@app.route("/setup/tokens/<key>", methods=["GET"])
+def setup_tokens(key):
+    if key != SETUP_KEY:
+        return jsonify({"error": "not found"}), 404
+    db = get_db()
+    rows = db.execute("SELECT id, name, api_token FROM members").fetchall()
+    return jsonify({r["id"]: {"name": r["name"], "token": r["api_token"]} for r in rows})
+
+# ---------------------------------------------------------------------------
 # Operating charter
 # ---------------------------------------------------------------------------
 
