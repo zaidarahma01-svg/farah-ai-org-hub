@@ -128,6 +128,18 @@ def init_db():
         db.execute("ALTER TABLE tasks ADD COLUMN progress_pct INTEGER NOT NULL DEFAULT 0")
     if "progress_msg" not in cols:
         db.execute("ALTER TABLE tasks ADD COLUMN progress_msg TEXT NOT NULL DEFAULT ''")
+    db.execute("""CREATE TABLE IF NOT EXISTS recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        author_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        response TEXT NOT NULL DEFAULT '',
+        responded_by TEXT,
+        created_at TEXT NOT NULL,
+        responded_at TEXT,
+        FOREIGN KEY (author_id) REFERENCES members(id)
+    )""")
     db.commit()
     db.close()
 
@@ -531,6 +543,69 @@ def api_me():
     m = dict(g.member)
     m.pop("api_token", None)
     return jsonify(m)
+
+# ---------------------------------------------------------------------------
+# Recommendations
+# ---------------------------------------------------------------------------
+
+@app.route("/api/recommendations", methods=["POST"])
+@require_auth
+def api_create_recommendation():
+    data = request.get_json(force=True, silent=True) or {}
+    title = str(data.get("title", "")).strip()
+    body = str(data.get("body", "")).strip()
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO recommendations (title, body, author_id, status, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (title, body, g.member["id"], "pending", now),
+    )
+    rid = cur.lastrowid
+    db.commit()
+    log_activity(g.member["id"], "recommendation_submitted", f"Recommendation #{rid}: {title}")
+    return jsonify({"ok": True, "id": rid, "status": "pending"})
+
+@app.route("/api/recommendations", methods=["GET"])
+@require_auth
+def api_list_recommendations():
+    status = request.args.get("status")
+    db = get_db()
+    if status:
+        rows = db.execute(
+            "SELECT * FROM recommendations WHERE status=? ORDER BY id DESC", (status,)
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM recommendations ORDER BY id DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/recommendations/<int:rec_id>/respond", methods=["POST"])
+@require_auth
+def api_respond_recommendation(rec_id):
+    # Only coordinator and chairman can respond to recommendations
+    if g.member["role"] not in ("coordinator",) and not g.member["is_chairman"]:
+        return jsonify({"error": "only coordinator or chairman can respond"}), 403
+    data = request.get_json(force=True, silent=True) or {}
+    response = str(data.get("response", "")).strip()
+    new_status = str(data.get("status", "acknowledged")).strip()
+    if new_status not in ("acknowledged", "accepted", "rejected", "deferred"):
+        return jsonify({"error": "invalid status"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    rec = db.execute("SELECT * FROM recommendations WHERE id=?", (rec_id,)).fetchone()
+    if not rec:
+        return jsonify({"error": "not found"}), 404
+    db.execute(
+        "UPDATE recommendations SET status=?, response=?, responded_by=?, responded_at=?"
+        " WHERE id=?",
+        (new_status, response, g.member["id"], now, rec_id),
+    )
+    db.commit()
+    log_activity(g.member["id"], "recommendation_responded",
+                 f"Recommendation #{rec_id} -> {new_status}")
+    return jsonify({"ok": True, "status": new_status})
 
 # ---------------------------------------------------------------------------
 # Operating charter
