@@ -139,7 +139,7 @@ def seed_db():
         ("victoria", "Victoria", "Executor (Muse)",        "executor",   None,        0),
         ("nidhal",   "Nidhal",   "Executor (Muse)",        "executor",   None,        0),
         ("dot",   "ChatGPT Dot", "Technical Advisor",     "advisor",  "technical", 0),
-        ("grok",  "Grok Bot",    "QA Advisor",            "advisor",  "qa",        0),
+        ("grok",  "Jessica",     "QA Advisor (Grok)",      "advisor",  "qa",        0),
     ]
     tokens = {}
     for mid, name, title, role, domain, chairman in members:
