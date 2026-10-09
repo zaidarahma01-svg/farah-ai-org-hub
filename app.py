@@ -1287,7 +1287,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <h1>◆ Farah Gold AI Organization Hub</h1>
-  <div class="sub">Advise · Decide · Verify &nbsp;·&nbsp; <a href="/charter">Operating Charter</a></div>
+  <div class="sub">Advise · Decide · Verify &nbsp;·&nbsp; <a href="/charter">Operating Charter</a> &nbsp;·&nbsp; <a href="/connect">Connect</a></div>
+
+  <div class="card" style="margin-bottom:24px;">
+    <h2>Team Chat</h2>
+    <div id="chatbox" style="max-height:400px;overflow-y:auto;margin-bottom:12px;"></div>
+    <div style="display:flex;gap:8px;">
+      <input id="chatinput" type="text" placeholder="What's going on..."
+             style="flex:1;background:var(--card);color:var(--text);border:1px solid #2a2318;border-radius:6px;padding:10px;font-family:Georgia,serif;">
+      <button onclick="sendChat()" style="background:var(--gold);color:#0d0b08;border:none;border-radius:6px;padding:10px 20px;font-weight:bold;cursor:pointer;">Send</button>
+    </div>
+  </div>
 
   <div class="grid">
     <div class="card">
@@ -1354,21 +1364,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     {% endif %}
   </div>
 
-  <div class="card">
-    <h2>Team Chat</h2>
-    <div id="chatbox" style="max-height:300px;overflow-y:auto;margin-bottom:12px;"></div>
-    <div style="display:flex;gap:8px;">
-      <input id="chatinput" type="text" placeholder="What's going on..."
-             style="flex:1;background:var(--card);color:var(--text);border:1px solid #2a2318;border-radius:6px;padding:10px;font-family:Georgia,serif;">
-      <button onclick="sendChat()" style="background:var(--gold);color:#0d0b08;border:none;border-radius:6px;padding:10px 20px;font-weight:bold;cursor:pointer;">Send</button>
-    </div>
-  </div>
   <script>
     const chatToken = new URLSearchParams(location.search).get('token') || '';
     let lastChatId = 0;
     async function loadChat() {
       try {
-        const r = await fetch('/api/chat?limit=30', { headers: { 'Authorization': 'Bearer ' + chatToken } });
+        const r = await fetch('/api/chat?limit=100', { headers: { 'Authorization': 'Bearer ' + chatToken } });
         const msgs = await r.json();
         const box = document.getElementById('chatbox');
         box.innerHTML = '';
