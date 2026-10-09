@@ -128,6 +128,16 @@ def init_db():
         db.execute("ALTER TABLE tasks ADD COLUMN progress_pct INTEGER NOT NULL DEFAULT 0")
     if "progress_msg" not in cols:
         db.execute("ALTER TABLE tasks ADD COLUMN progress_msg TEXT NOT NULL DEFAULT ''")
+    # Migrate: rename victoria -> rumi (member ID)
+    _row = db.execute("SELECT id FROM members WHERE id='victoria'").fetchone()
+    if _row:
+        db.execute("UPDATE members SET id='rumi' WHERE id='victoria'")
+        db.execute("UPDATE tasks SET accountable='rumi' WHERE accountable='victoria'")
+        db.execute("UPDATE tasks SET assigned_reviewer='rumi' WHERE assigned_reviewer='victoria'")
+        db.execute("UPDATE tasks SET created_by='rumi' WHERE created_by='victoria'")
+        db.execute("UPDATE recommendations SET author_id='rumi' WHERE author_id='victoria'")
+        db.execute("UPDATE recommendations SET responded_by='rumi' WHERE responded_by='victoria'")
+        db.execute("UPDATE activity SET actor='rumi' WHERE actor='victoria'")
     db.execute("""CREATE TABLE IF NOT EXISTS recommendations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
@@ -155,7 +165,7 @@ def read_existing_tokens():
 def _sync_names(db):
     """Update member display names/titles from code without touching tokens."""
     updates = [
-        ("victoria", "Rumi", "Executor (Muse)"),
+        ("rumi", "Rumi", "Executor (Muse)"),
         ("grok", "Jessica", "QA Advisor (Grok)"),
     ]
     for mid, name, title in updates:
@@ -179,7 +189,7 @@ def seed_db():
         # id, name, title, role, domain, chairman
         ("zaid",  "Zaid Rahma",  "Owner / Chairman",      "chairman", None,        1),
         ("layla", "Layla",       "Coordinator (Muse)",            "coordinator",      None,        0),
-        ("victoria", "Rumi",      "Executor (Muse)",        "executor",   None,        0),
+        ("rumi", "Rumi",      "Executor (Muse)",        "executor",   None,        0),
         ("nidhal",   "Nidhal",   "Executor (Muse)",        "executor",   None,        0),
         ("dot",   "ChatGPT Dot", "Technical Advisor",     "advisor",  "technical", 0),
         ("grok",  "Jessica",     "QA Advisor (Grok)",      "advisor",  "qa",        0),
