@@ -136,7 +136,7 @@ def seed_db():
         # id, name, title, role, domain, chairman
         ("zaid",  "Zaid Rahma",  "Owner / Chairman",      "chairman", None,        1),
         ("layla", "Layla",       "Coordinator (Muse)",            "coordinator",      None,        0),
-        ("victoria", "Victoria", "Executor (Muse)",        "executor",   None,        0),
+        ("victoria", "Rumi",      "Executor (Muse)",        "executor",   None,        0),
         ("nidhal",   "Nidhal",   "Executor (Muse)",        "executor",   None,        0),
         ("dot",   "ChatGPT Dot", "Technical Advisor",     "advisor",  "technical", 0),
         ("grok",  "Jessica",     "QA Advisor (Grok)",      "advisor",  "qa",        0),
